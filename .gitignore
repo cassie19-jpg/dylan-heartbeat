@@ -1,5 +1,7 @@
 .env
 node_modules
+.npm-cache/
+.tmp-repro/
 enhanced_messages.json
 message_timestamps.json
 enhanced_messages.json*

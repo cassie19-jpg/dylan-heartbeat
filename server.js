@@ -12,6 +12,7 @@ const {
 } = require("./runtime_paths");
 const { isSpecialEventContent } = require("./special_events");
 const { decideRequestAccess } = require("./network_access");
+const { rememberLatestUserReceipt } = require("./message_timestamp_memory");
 const {
   formatDateTimeInTimeZone,
   resolveTimeZone,
@@ -581,6 +582,16 @@ app.post("/v1/chat/completions", async (req, reply) => {
       const fpStripped = makeFingerprintStripped(msg);
       if (!tsDB[fp]) { tsDB[fp] = ts.toISOString(); tsDBDirty = true; }
       if (!tsDB[fpStripped]) { tsDB[fpStripped] = ts.toISOString(); tsDBDirty = true; }
+    }
+    const latestUser = [...kelivoMessages].reverse().find(msg => msg.role === "user");
+    if (
+      latestUser &&
+      !extractTimestamp(normalizeContentToText(latestUser.content)) &&
+      rememberLatestUserReceipt(kelivoMessages, tsDB, new Date(), normalizeContentToText)
+    ) {
+      // 新版 Kelivo 可能完全不发送时间前缀。以 Gateway 收到本次请求的时间记录最后一条
+      // 用户消息，使 wake-up 在云端重启后仍能确定“用户多久没有回复”。
+      tsDBDirty = true;
     }
     if (tsDBDirty) saveTimestampDB(tsDB);
 

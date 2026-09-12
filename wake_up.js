@@ -15,6 +15,7 @@ const {
 // 批注 2026-08-10：与 Gateway 共用同一 DATA_DIR；未配置时仍落回项目目录，保护旧 VPS/本机部署。
 const DATA_DIR = ensureDataDir();
 const TIMELINE_PATH = runtimeFile("enhanced_messages.json");
+const TIMESTAMP_DB_PATH = runtimeFile("message_timestamps.json");
 const PORT = Number(process.env.PORT) || 3000;
 const GATEWAY_BASE_URL = (process.env.GATEWAY_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, "");
 const GATEWAY_URL = `${GATEWAY_BASE_URL}/internal/wake-event`;
@@ -340,7 +341,38 @@ function parseTimelineTimestamp(value) {
   return zonedWallTimeToDate({ year: yyyy, month, day, hour, minute }, TIME_ZONE);
 }
 
-function getLastUserTime(messages) {
+function stripLeadingTimestamp(content) {
+  return String(content || "")
+    .replace(/^（?\s*\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]?)\d{1,2}[:：]\d{2}[）\s]*/, "")
+    .trim();
+}
+
+function loadTimestampDB() {
+  if (!fs.existsSync(TIMESTAMP_DB_PATH)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(TIMESTAMP_DB_PATH, "utf-8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (err) {
+    console.error("读取 message_timestamps.json 失败:", err.message);
+    return {};
+  }
+}
+
+function timestampFromMemory(msg, timestampDB) {
+  const raw = normalizeContentToText(msg.content);
+  const keys = [
+    `${msg.role}::${raw.trim().slice(0, 150)}`,
+    `${msg.role}::${stripLeadingTimestamp(raw).slice(0, 150)}`
+  ];
+  for (const key of keys) {
+    if (!timestampDB[key]) continue;
+    const remembered = new Date(timestampDB[key]);
+    if (!Number.isNaN(remembered.getTime())) return remembered;
+  }
+  return null;
+}
+
+function getLastUserTime(messages, timestampDB = loadTimestampDB()) {
   const reversed = [...messages].reverse();
   for (const msg of reversed) {
     if (msg.role === "user") {
@@ -349,6 +381,8 @@ function getLastUserTime(messages) {
       // 旧的 "YYYY-MM-DD HH:mm" 仍然可用，避免无空格时间导致 wake-up 误判没有用户时间。
       const parsed = parseTimelineTimestamp(content);
       if (parsed) return parsed;
+      const remembered = timestampFromMemory(msg, timestampDB);
+      if (remembered) return remembered;
     }
   }
   return null;
@@ -625,20 +659,24 @@ async function scheduleNextCheck() {
   setTimeout(scheduleNextCheck, getCheckIntervalMs());
 }
 
-// 潮水记得第一次没过礁石的时间。之后每一次涨落，都是同一片海在确认边界。
-// 启动第一次检查（延迟10秒）
-setTimeout(scheduleNextCheck, 10_000);
+if (require.main === module) {
+  // 潮水记得第一次没过礁石的时间。之后每一次涨落，都是同一片海在确认边界。
+  // 启动第一次检查（延迟10秒）
+  setTimeout(scheduleNextCheck, 10_000);
 
-console.log("\n==================================");
-console.log("Dylan Heartbeat Runtime 已启动（动态间隔）");
-console.log(JSON.stringify({
-  event: "wake_runtime_config_summary",
-  railway: Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_SERVICE_ID),
-  persistent_data: Boolean(process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH),
-  target_url_configured: Boolean(process.env.TARGET_API_URL),
-  target_key_configured: Boolean(process.env.TARGET_API_KEY),
-  model_configured: Boolean(process.env.MODEL_NAME),
-  push_provider_configured: Boolean(process.env.BARK_KEY || process.env.NTFY_TOPIC),
-  data_dir_ready: fs.existsSync(DATA_DIR)
-}));
-console.log("==================================\n");
+  console.log("\n==================================");
+  console.log("Dylan Heartbeat Runtime 已启动（动态间隔）");
+  console.log(JSON.stringify({
+    event: "wake_runtime_config_summary",
+    railway: Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_SERVICE_ID),
+    persistent_data: Boolean(process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH),
+    target_url_configured: Boolean(process.env.TARGET_API_URL),
+    target_key_configured: Boolean(process.env.TARGET_API_KEY),
+    model_configured: Boolean(process.env.MODEL_NAME),
+    push_provider_configured: Boolean(process.env.BARK_KEY || process.env.NTFY_TOPIC),
+    data_dir_ready: fs.existsSync(DATA_DIR)
+  }));
+  console.log("==================================\n");
+}
+
+module.exports = { getLastUserTime, parseTimelineTimestamp, stripLeadingTimestamp };
