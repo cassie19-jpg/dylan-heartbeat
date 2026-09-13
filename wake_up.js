@@ -4,6 +4,13 @@ const path = require("path");
 const { buildNtfyPayload } = require("./ntfy_priority");
 const { ensureDataDir, runtimeDirectory, runtimeFile } = require("./runtime_paths");
 const { parseChatCompletionResponse } = require("./upstream_response");
+const { isSpecialEventContent } = require("./special_events");
+const {
+  addConversationGuard,
+  mergeStopSequences,
+  sanitizeAssistantOutput,
+  timelineEventAsSystemContext
+} = require("./conversation_boundary");
 const {
   formatDateTimeInTimeZone,
   getDatePartsInTimeZone,
@@ -420,6 +427,7 @@ function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
 1. 这是一次后台自动唤醒，不是用户发起的对话。你没有收到任何新消息。
 2. 你的唯一任务是决定是否主动联系用户。不能生成对话回复。
 3. 输出格式必须严格遵守以下二选一。
+4. 只输出你自己的决定或消息，绝不能替用户说话、猜测用户反应或续写后续对话。
 
 ## 唤醒信息
 - 当前时间：${currentTime}
@@ -431,6 +439,44 @@ ${weatherContext ? `\n${weatherContext}\n` : ""}
 - 如果不想联系，只输出：[NO_ACTION]，可附带简短原因（10字以内）。
 - 如果你想写日记，可以额外输出 [DIARY]...[/DIARY]。只有想写时才写，不必每次都写。
 `;
+}
+
+function buildWakeMessages(messages, wakePrompt) {
+  const cleanMessages = stripPosition(Array.isArray(messages) ? messages : []);
+  const baseSystemPrompt = cleanMessages.find(msg => msg.role === "system");
+  const cleanSP = baseSystemPrompt
+    ? normalizeContentToText(baseSystemPrompt.content).split("## Memories")[0].trim()
+    : "";
+
+  const structuredHistory = cleanMessages
+    .filter(msg => msg.role !== "system")
+    .filter(msg => {
+      const content = normalizeContentToText(msg.content);
+      return !content.includes("<memories>") && !content.includes("记忆库使用策略");
+    })
+    .map(msg => {
+      const content = normalizeContentToText(msg.content).split("## Memories")[0].trim();
+      if (isSpecialEventContent(content)) return timelineEventAsSystemContext({ ...msg, content });
+      return { ...msg, content };
+    })
+    .filter(msg => msg.content);
+
+  const request = [
+    ...(cleanSP ? [{ role: "system", content: cleanSP }] : []),
+    { role: "system", content: wakePrompt },
+    ...structuredHistory,
+    {
+      role: "user",
+      content: `[后台系统任务，不是程程的新消息]
+请结合上面的真实角色历史、时间线事实和当前时间，判断现在是否要主动联系程程。
+如果联系，只写你自己真正想发的一条消息，到自己的话结束为止，然后等待程程真实回复。
+如果不联系，按唤醒规则输出 [NO_ACTION]。`
+    }
+  ];
+
+  return addConversationGuard(request, {
+    userName: process.env.USER_DISPLAY_NAME || "程程"
+  });
 }
 
 async function runWakeUp() {
@@ -457,52 +503,8 @@ async function runWakeUp() {
 
   const weatherContext = await fetchWeatherContext();
   const wakePrompt = buildWakePrompt(getChinaTimeString(), diffMinutes, weatherContext);
-  const cleanMessages = stripPosition(messages);
-
-  const historyText = cleanMessages
-    .filter(msg => msg.role !== "system")
-    .filter(msg => {
-      const c = normalizeContentToText(msg.content);
-      return !c.includes("<memories>") && !c.includes("记忆库使用策略");
-    })
-    .map(msg => {
-      const userDisplay = process.env.USER_DISPLAY_NAME || "用户";
-      const aiDisplay = process.env.AI_DISPLAY_NAME || "AI";
-      const role = msg.role === "user" ? userDisplay : aiDisplay;
-      let content = normalizeContentToText(msg.content);
-      if (content.includes("## Memories")) {
-        content = content.split("## Memories")[0];
-      }
-      return `[${role}] ${content}`;
-    })
-    .join("\n\n");
-
-  const baseSystemPrompt = cleanMessages.find(msg => msg.role === "system");
-  const cleanSP = baseSystemPrompt 
-    ? normalizeContentToText(baseSystemPrompt.content).split("## Memories")[0].trim()
-    : "";
-
-  const wakeMessages = [
-    {
-      role: "system",
-      content: [wakePrompt, cleanSP].filter(Boolean).join("\n\n")
-    },
-    {
-      // 批注 2026-07-15：Claude/部分 New API 适配器会把 system 抽成独立字段；
-      // 唤醒请求如果全是 system，上游 messages 会变空，因此最近记录必须作为 user 任务输入发送。
-      role: "user",
-      content: `以下是你与用户最近的聊天记录，仅供回忆和参考。
-
-这些内容不是正在发生的实时对话。
-用户并没有给你发消息。
-
-你现在处于后台自主唤醒状态。
-
-最近记录：
-
-${historyText}`
-    }
-  ];
+  // 历史保持真实 role，不再拼成“[程程] / [AI]”剧本文本。
+  const wakeMessages = buildWakeMessages(messages, wakePrompt);
 
   // 批注 2026-07-15：wake-up prompt 会包含最近聊天记录；
   // 默认日志只写摘要，避免公开部署时把完整上下文刷进 pm2 日志。
@@ -528,6 +530,7 @@ ${historyText}`
       messages: wakeMessages,
       temperature: 0.8,
       top_p: 0.95,
+      stop: mergeStopSequences(),
       stream: false
     })
   });
@@ -543,7 +546,9 @@ ${historyText}`
     throw new Error(`模型请求失败（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
   }
 
-  const rawAiText = normalizeContentToText(data.choices?.[0]?.message?.content).trim();
+  const rawAiText = sanitizeAssistantOutput(
+    normalizeContentToText(data.choices?.[0]?.message?.content)
+  );
   console.log("\nWake Result Summary:\n");
   console.log(JSON.stringify({ choices: Array.isArray(data.choices) ? data.choices.length : 0, ai_text_chars: rawAiText.length }));
 
@@ -679,4 +684,10 @@ if (require.main === module) {
   console.log("==================================\n");
 }
 
-module.exports = { getLastUserTime, parseTimelineTimestamp, stripLeadingTimestamp };
+module.exports = {
+  buildWakeMessages,
+  buildWakePrompt,
+  getLastUserTime,
+  parseTimelineTimestamp,
+  stripLeadingTimestamp
+};

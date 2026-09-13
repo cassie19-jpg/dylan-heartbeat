@@ -14,6 +14,12 @@ const { isSpecialEventContent } = require("./special_events");
 const { decideRequestAccess } = require("./network_access");
 const { rememberLatestUserReceipt } = require("./message_timestamp_memory");
 const {
+  addConversationGuard,
+  mergeStopSequences,
+  sanitizeChatCompletionPayload,
+  timelineEventAsSystemContext
+} = require("./conversation_boundary");
+const {
   formatDateTimeInTimeZone,
   resolveTimeZone,
   zonedWallTimeToDate
@@ -600,7 +606,7 @@ app.post("/v1/chat/completions", async (req, reply) => {
 
     // Kelivo 发图时 content 常是数组。默认原样透传给视觉模型；
     // 如上游不支持图片，可设置 MULTIMODAL_MODE=text 退回文本占位。
-    const llmMessages = kelivoMessages
+    let llmMessages = kelivoMessages
       .map(prepareMessageForLLM)
       .filter(Boolean);
 
@@ -615,7 +621,10 @@ app.post("/v1/chat/completions", async (req, reply) => {
 
     console.log("本次注入的特殊事件数量:", oldEvents.length);
 
-    for (const event of oldEvents) {
+    for (const originalEvent of oldEvents) {
+      // 唤醒结果是系统生成的时间线事实，不是助手曾经说过的一轮对话。
+      // 继续伪装成 assistant 会诱导模型把整段上下文当成角色剧本续写。
+      const event = timelineEventAsSystemContext(originalEvent);
       const eventTime = extractTimestampWithMemory(event, tsDB);
       if (!eventTime) { llmMessages.push(event); continue; }
       let inserted = false;
@@ -703,6 +712,11 @@ app.post("/v1/chat/completions", async (req, reply) => {
       llmMessages.splice(idx, 1);
     }
 
+    // Kelivo 的人格提示词继续保留；Gateway 只补一层稳定的角色边界和中文表达规则。
+    llmMessages = addConversationGuard(llmMessages, {
+      userName: process.env.USER_DISPLAY_NAME || "程程"
+    });
+
     if (!TARGET_API_URL || !process.env.TARGET_API_KEY) {
       return reply.code(500).send({ error: "TARGET_API_URL / TARGET_API_KEY 未配置" });
     }
@@ -716,7 +730,11 @@ app.post("/v1/chat/completions", async (req, reply) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.TARGET_API_KEY}`
       },
-      body: JSON.stringify({ ...body, messages: llmMessages })
+      body: JSON.stringify({
+        ...body,
+        messages: llmMessages,
+        stop: mergeStopSequences(body?.stop)
+      })
     });
 
     const upstreamContentType = response.headers.get("content-type") || "";
@@ -725,10 +743,16 @@ app.post("/v1/chat/completions", async (req, reply) => {
     // 批注 2026-07-11：Kelivo 关闭 stream 时需要收到普通 JSON；只在请求或上游确认为 SSE 时才按流式直通。
     if (!shouldStreamResponse) {
       const responseText = await response.text();
+      let safeResponseText = responseText;
+      if (/json/i.test(upstreamContentType) || /^\s*\{/.test(responseText)) {
+        try {
+          safeResponseText = JSON.stringify(sanitizeChatCompletionPayload(JSON.parse(responseText)));
+        } catch {}
+      }
       return reply
         .code(response.status)
         .header("Content-Type", upstreamContentType || "application/json")
-        .send(responseText);
+        .send(safeResponseText);
     }
 
     if (!response.body) {
