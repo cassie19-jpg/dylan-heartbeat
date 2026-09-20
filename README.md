@@ -153,7 +153,7 @@ node wake_up.js
 
 - 🖼️ 多模态默认改为视觉透传：`MULTIMODAL_MODE` 默认使用 `passthrough`，Kelivo 发来的图片 `content` 数组会原样交给支持 OpenAI 兼容视觉格式的上游模型；不支持图片的模型可显式设回 `MULTIMODAL_MODE=text`。
 - 🕰️ 兼容无空格时间戳：`2026-07-15 01:23` 和 `2026-07-1501:23` 都能被 Gateway / wake-up 识别，避免消息排序、时间记忆和唤醒判断失效。
-- 🧭 `/v1/models` 改为读取配置模型：模型列表会返回 `.env` 里的 `MODEL_NAME`，不再固定显示示例模型名。
+- 🧭 `/v1/models` 改为读取配置模型：配置 `MODEL_LIST` 时返回全部可切换模型；未配置时继续返回 `MODEL_NAME`，兼容旧部署。
 - 📔 管理页新增 Wake Diary：`/admin` 可以只读查看 `DIARY_DIR` 下最近的 `.md` 日记文件，方便确认自动日记是否写入。
 - 🔐 公网 `/v1` 新增 Gateway API Key 鉴权：`ALLOW_PUBLIC_API=true` 时必须配置 `GATEWAY_API_KEY`，Kelivo 只需要填写这个网关 key，上游 `TARGET_API_KEY` 留在服务器内部。
 - 🧩 修复 Claude / New API 唤醒兼容：wake-up 请求不再全部使用 `system` 消息，避免部分中转站把 messages 抽空后报 `field messages is required`。
@@ -234,7 +234,9 @@ nano .env   # 也可直接用文本编辑器打开 .env 文件修改
 TARGET_API_URL=https://你的API地址/v1/chat/completions
 TARGET_API_KEY=sk-你的APIKey
 GATEWAY_API_KEY=请改成随机长密码
-MODEL_NAME=你的模型
+MODEL_LIST=deepseek模型ID,claude模型ID
+MODEL_NAME=默认聊天模型ID
+WAKE_MODEL=主动唤醒使用的模型ID
 BARK_KEY=你的Bark设备Key
 CUSTOM_ICON_URL=https://你的图标URL（可选）
 ALLOW_PUBLIC_API=false
@@ -267,6 +269,8 @@ RESTART_COMMAND=pm2 restart gateway wake-up --update-env
 ADMIN_USER=admin
 ADMIN_PASSWORD=你的强密码
 ```
+
+`MODEL_LIST` 是 Kelivo 可以切换的模型白名单，使用上游控制台显示的完整模型 ID，多个模型用英文逗号分隔。`MODEL_NAME` 是请求没有指定模型时的默认值；`WAKE_MODEL` 只控制后台 heartbeat 主动唤醒。未配置 `MODEL_LIST` 时仍按旧方式只使用 `MODEL_NAME`，因此原有单模型部署无需修改。
 
 图片消息说明：
 

@@ -24,6 +24,10 @@ const {
   resolveTimeZone,
   zonedWallTimeToDate
 } = require("./time_utils");
+const {
+  configuredModelNames,
+  selectRequestedModel
+} = require("./model_config");
 
 const DEFAULT_BODY_LIMIT_MB = 50;
 
@@ -61,12 +65,6 @@ function readBooleanEnv(key, fallback = false) {
   const raw = String(process.env[key] ?? "").trim().toLowerCase();
   if (!raw) return fallback;
   return ["1", "true", "yes", "on"].includes(raw);
-}
-
-function configuredModelName() {
-  // 批注 2026-07-15：/v1/models 要暴露部署者实际配置的模型名；
-  // 不能继续硬编码示例模型，否则 Kelivo 模型选择会和真实上游不一致。
-  return String(process.env.MODEL_NAME || "gateway-model").trim() || "gateway-model";
 }
 
 // ========================
@@ -430,7 +428,9 @@ const PREFERRED_ENV_ORDER = [
   "TARGET_API_URL",
   "TARGET_API_KEY",
   "GATEWAY_API_KEY",
+  "MODEL_LIST",
   "MODEL_NAME",
+  "WAKE_MODEL",
   "BARK_KEY",
   "CUSTOM_ICON_URL",
   "ALLOW_PUBLIC_API",
@@ -555,7 +555,7 @@ app.get("/healthz", async () => ({ status: "ok" }));
 app.get("/v1/models", async (req, reply) => {
   reply.send({
     object: "list",
-    data: [{ id: configuredModelName(), object: "model", created: 0, owned_by: "gateway" }]
+    data: configuredModelNames().map(id => ({ id, object: "model", created: 0, owned_by: "gateway" }))
   });
 });
 
@@ -564,7 +564,18 @@ app.get("/v1/models", async (req, reply) => {
 // ========================
 app.post("/v1/chat/completions", async (req, reply) => {
   try {
-    const body = req.body;
+    const body = req.body || {};
+    const selectedModel = selectRequestedModel(body.model);
+    if (!selectedModel.valid) {
+      return reply.code(400).send({
+        error: {
+          message: `模型 ${selectedModel.model} 未在 HEARTBEAT 的 MODEL_LIST 中启用`,
+          type: "invalid_request_error",
+          param: "model",
+          code: "model_not_allowed"
+        }
+      });
+    }
     // 批注 2026-07-15：公开部署时日志不能默认写入完整上下文；
     // 这里只保留请求摘要，避免 system prompt、记忆和聊天正文进入 pm2 日志。
     console.log(JSON.stringify({
@@ -732,6 +743,7 @@ app.post("/v1/chat/completions", async (req, reply) => {
       },
       body: JSON.stringify({
         ...body,
+        model: selectedModel.model,
         messages: llmMessages,
         stop: mergeStopSequences(body?.stop)
       })
@@ -1799,7 +1811,7 @@ app.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
     persistent_data: Boolean(process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH),
     target_url_configured: Boolean(TARGET_API_URL),
     target_key_configured: Boolean(process.env.TARGET_API_KEY),
-    model_configured: Boolean(process.env.MODEL_NAME),
+    model_configured: configuredModelNames().some(model => model !== "gateway-model"),
     gateway_key_configured: Boolean(readEnvValue("GATEWAY_API_KEY")),
     data_dir_ready: fs.existsSync(DATA_DIR)
   }));

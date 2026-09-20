@@ -18,6 +18,7 @@ const {
   resolveTimeZone,
   zonedWallTimeToDate
 } = require("./time_utils");
+const { selectWakeModel } = require("./model_config");
 
 // 批注 2026-08-10：与 Gateway 共用同一 DATA_DIR；未配置时仍落回项目目录，保护旧 VPS/本机部署。
 const DATA_DIR = ensureDataDir();
@@ -511,8 +512,13 @@ async function runWakeUp() {
   console.log("\n===== WAKE MESSAGES SUMMARY =====\n");
   console.log(JSON.stringify(summarizeWakeMessages(wakeMessages)));
 
-  if (!process.env.TARGET_API_URL || !process.env.TARGET_API_KEY || !process.env.MODEL_NAME) {
-    console.log("缺少 TARGET_API_URL / TARGET_API_KEY / MODEL_NAME，跳过本次唤醒");
+  const wakeModel = selectWakeModel();
+  if (!process.env.TARGET_API_URL || !process.env.TARGET_API_KEY || !wakeModel.model) {
+    console.log("缺少 TARGET_API_URL / TARGET_API_KEY / 模型配置，跳过本次唤醒");
+    return;
+  }
+  if (!wakeModel.valid) {
+    console.log(`WAKE_MODEL ${wakeModel.model} 未在 MODEL_LIST 中启用，跳过本次唤醒`);
     return;
   }
 
@@ -526,7 +532,7 @@ async function runWakeUp() {
       Authorization: `Bearer ${process.env.TARGET_API_KEY}`
     },
     body: JSON.stringify({
-      model: process.env.MODEL_NAME,
+      model: wakeModel.model,
       messages: wakeMessages,
       temperature: 0.8,
       top_p: 0.95,
@@ -677,7 +683,7 @@ if (require.main === module) {
     persistent_data: Boolean(process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH),
     target_url_configured: Boolean(process.env.TARGET_API_URL),
     target_key_configured: Boolean(process.env.TARGET_API_KEY),
-    model_configured: Boolean(process.env.MODEL_NAME),
+    model_configured: selectWakeModel().valid,
     push_provider_configured: Boolean(process.env.BARK_KEY || process.env.NTFY_TOPIC),
     data_dir_ready: fs.existsSync(DATA_DIR)
   }));
