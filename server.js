@@ -735,20 +735,20 @@ app.post("/v1/chat/completions", async (req, reply) => {
     const requestedStream = body?.stream === true;
 
     // 请求模型
-    const response = await fetch(TARGET_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.TARGET_API_KEY}`
-      },
-      body: JSON.stringify({
-        ...body,
-        model: selectedModel.model,
-        messages: llmMessages,
-        stop: mergeStopSequences(body?.stop)
-      })
-    });
-
+const upstreamBody = {
+  ...body,
+  model: selectedModel.model,
+  messages: llmMessages
+};
+delete upstreamBody.stop;
+   const response = await fetch(TARGET_API_URL, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${process.env.TARGET_API_KEY}`
+  },
+  body: JSON.stringify(upstreamBody)
+});
     const upstreamContentType = response.headers.get("content-type") || "";
     const shouldStreamResponse = requestedStream || upstreamContentType.includes("text/event-stream");
 
