@@ -18,6 +18,10 @@ const {
   resolveTimeZone,
   zonedWallTimeToDate
 } = require("./time_utils");
+const {
+  isKimiModel,
+  normalizeTemperatureForModel
+} = require("./model_parameters");
 const { selectWakeModel } = require("./model_config");
 
 // 批注 2026-08-10：与 Gateway 共用同一 DATA_DIR；未配置时仍落回项目目录，保护旧 VPS/本机部署。
@@ -522,6 +526,16 @@ async function runWakeUp() {
     return;
   }
 
+  const wakeRequestBody = {
+    model: wakeModel.model,
+    messages: wakeMessages,
+    temperature: normalizeTemperatureForModel(wakeModel.model, 0.8),
+    top_p: 0.95,
+    stop: mergeStopSequences(),
+    stream: false
+  };
+  if (isKimiModel(wakeModel.model)) delete wakeRequestBody.stop;
+
   const response = await fetch(process.env.TARGET_API_URL, {
     method: "POST",
     // 批注 2026-08-10：上游只建连不结束时，旧循环永远不会安排下一次检查；
@@ -531,14 +545,7 @@ async function runWakeUp() {
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.TARGET_API_KEY}`
     },
-    body: JSON.stringify({
-      model: wakeModel.model,
-      messages: wakeMessages,
-      temperature: 0.8,
-      top_p: 0.95,
-      stop: mergeStopSequences(),
-      stream: false
-    })
+    body: JSON.stringify(wakeRequestBody)
   });
 
   const responseText = await response.text();
