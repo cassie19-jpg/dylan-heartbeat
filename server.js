@@ -28,7 +28,7 @@ const {
   configuredModelNames,
   selectRequestedModel
 } = require("./model_config");
-const { normalizeTemperatureForModel } = require("./model_parameters");
+const { applyModelParameterCompatibility } = require("./model_parameters");
 
 const DEFAULT_BODY_LIMIT_MB = 50;
 
@@ -741,10 +741,7 @@ app.post("/v1/chat/completions", async (req, reply) => {
       model: selectedModel.model,
       messages: llmMessages
     };
-    upstreamBody.temperature = normalizeTemperatureForModel(
-      selectedModel.model,
-      upstreamBody.temperature
-    );
+    applyModelParameterCompatibility(selectedModel.model, upstreamBody);
     delete upstreamBody.stop;
 
     const response = await fetch(TARGET_API_URL, {

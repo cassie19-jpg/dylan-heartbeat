@@ -1,9 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  KIMI_REQUIRED_TEMPERATURE,
+  applyModelParameterCompatibility,
   isKimiModel,
-  normalizeTemperatureForModel
 } = require("../model_parameters");
 
 test("识别 Kimi 和 Moonshot 模型 ID", () => {
@@ -12,14 +11,21 @@ test("识别 Kimi 和 Moonshot 模型 ID", () => {
   assert.equal(isKimiModel("anthropic/claude-sonnet-4.6"), false);
 });
 
-test("Kimi 始终使用上游唯一允许的温度 1", () => {
-  assert.equal(normalizeTemperatureForModel("kimi-k2.5", undefined), KIMI_REQUIRED_TEMPERATURE);
-  assert.equal(normalizeTemperatureForModel("kimi-k2.5", 0.6), KIMI_REQUIRED_TEMPERATURE);
-  assert.equal(normalizeTemperatureForModel("kimi-k2.5", 0.8), KIMI_REQUIRED_TEMPERATURE);
-  assert.equal(normalizeTemperatureForModel("moonshotai/kimi-k2", "1"), KIMI_REQUIRED_TEMPERATURE);
+test("Kimi 交由官方 API 按思考模式选择固定采样参数", () => {
+  const body = {
+    temperature: 0.6,
+    top_p: 1,
+    n: 2,
+    presence_penalty: 0.5,
+    frequency_penalty: 0.5,
+    messages: [{ role: "user", content: "你好" }]
+  };
+  applyModelParameterCompatibility("kimi-k2.6", body);
+  assert.deepEqual(body, { messages: [{ role: "user", content: "你好" }] });
 });
 
-test("其他模型温度参数保持不变", () => {
-  assert.equal(normalizeTemperatureForModel("anthropic/claude-sonnet-4.6", 0.8), 0.8);
-  assert.equal(normalizeTemperatureForModel("deepseek-chat", undefined), undefined);
+test("其他模型采样参数保持不变", () => {
+  const body = { temperature: 0.8, top_p: 0.9 };
+  assert.equal(applyModelParameterCompatibility("anthropic/claude-sonnet-4.6", body), body);
+  assert.deepEqual(body, { temperature: 0.8, top_p: 0.9 });
 });

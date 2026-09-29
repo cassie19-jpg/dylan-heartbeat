@@ -19,8 +19,8 @@ const {
   zonedWallTimeToDate
 } = require("./time_utils");
 const {
+  applyModelParameterCompatibility,
   isKimiModel,
-  normalizeTemperatureForModel
 } = require("./model_parameters");
 const { selectWakeModel } = require("./model_config");
 
@@ -529,11 +529,12 @@ async function runWakeUp() {
   const wakeRequestBody = {
     model: wakeModel.model,
     messages: wakeMessages,
-    temperature: normalizeTemperatureForModel(wakeModel.model, 0.8),
+    temperature: 0.8,
     top_p: 0.95,
     stop: mergeStopSequences(),
     stream: false
   };
+  applyModelParameterCompatibility(wakeModel.model, wakeRequestBody);
   if (isKimiModel(wakeModel.model)) delete wakeRequestBody.stop;
 
   const response = await fetch(process.env.TARGET_API_URL, {
