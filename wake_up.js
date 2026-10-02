@@ -535,8 +535,7 @@ async function runWakeUp() {
     stream: false
   };
   applyModelParameterCompatibility(wakeModel.model, wakeRequestBody);
-  if (isKimiModel(wakeModel.model)) delete wakeRequestBody.stop;
-
+ delete wakeRequestBody.stop;
   const response = await fetch(process.env.TARGET_API_URL, {
     method: "POST",
     // 批注 2026-08-10：上游只建连不结束时，旧循环永远不会安排下一次检查；
