@@ -6,6 +6,8 @@ const notion = require('./notion_mcp');
 function record(entry) {
   ensureDataDir();
   fs.appendFileSync(runtimeFile('wake-actions.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', { mode: 0o600 });
+  const { run, type, turn, tool, ok, verification, inputChars, originalChars, sentChars, truncated, elapsedMs, finishReason, calls } = entry;
+  console.log(JSON.stringify({ event: 'wake_agent', run, type, turn, tool, ok, verification, inputChars, originalChars, sentChars, truncated, elapsedMs, finishReason, calls }));
 }
 function recentActions() {
   const file = runtimeFile('wake-actions.jsonl');
@@ -27,8 +29,15 @@ Notion 只开放 fetch 和 create-pages。使用工具声明的真实参数，�
 手机推送完全自选：仅用 [BARK]你想发的消息[/BARK] 明确请求推送。不推送时输出 [NO_ACTION]。本地日记仍可用 [DIARY]正文[/DIARY]。普通行动总结不产生通知。不能代替用户发言。
 近期真实行动记录（避免重复）：\n${recentActions() || '暂无'}`;
 }
+function boundedToolOutput(output) {
+  const text = JSON.stringify(output);
+  if (text.length <= 8000) return { content: text, originalChars: text.length, truncated: false };
+  // 保持工具消息为完整 JSON；页面正文过长时只提供有标记的节选。
+  const excerpt = notion.resultText(output.result).slice(0, 6000);
+  return { content: JSON.stringify({ result_excerpt: excerpt, verification: output.verification, truncated: true, note: '页面仅返回节选；不要假定已经阅读完整页面。' }), originalChars: text.length, truncated: true };
+}
 async function runAgent({ body, request, connect = notion.connectNotion, log = record, maxCalls = 6 }) {
-  const deadline = AbortSignal.timeout(180000);
+  const deadline = AbortSignal.timeout(360000);
   const run = crypto.randomUUID();
   const session = await connect();
   const allowed = new Set(Object.values(notion.targets()).filter(Boolean));
@@ -44,7 +53,16 @@ async function runAgent({ body, request, connect = notion.connectNotion, log = r
     for (let turn = 0; turn <= maxCalls; turn++) {
       const exhausted = used >= maxCalls || uncertain;
       deadline.throwIfAborted();
-      const data = await request({ ...body, messages, tools, tool_choice: exhausted ? 'none' : 'auto' }, deadline);
+      const started = Date.now();
+      log({ run, type: 'model_started', turn, inputChars: JSON.stringify(messages).length });
+      let data;
+      try {
+        data = await request({ ...body, max_tokens: 2048, messages, tools, tool_choice: exhausted ? 'none' : 'auto' }, deadline);
+      } catch (error) {
+        log({ run, type: 'model_failed', turn, elapsedMs: Date.now() - started, error: error.message });
+        throw error;
+      }
+      log({ run, type: 'model_result', turn, elapsedMs: Date.now() - started, finishReason: data.choices?.[0]?.finish_reason, usage: data.usage });
       const message = data.choices?.[0]?.message;
       if (!message) throw new Error('模型未返回 assistant message');
       if (!message.tool_calls?.length) {
@@ -93,11 +111,13 @@ async function runAgent({ body, request, connect = notion.connectNotion, log = r
           output = { error: error.message, verification: dispatched && name === 'notion-create-pages' ? 'unknown' : 'failed' };
           log({ run, type: 'tool_result', tool: name || 'unknown', ok: false, verification: output.verification, error: error.message });
         }
-        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(output).slice(0, 40000) });
+        const bounded = boundedToolOutput(output);
+        log({ run, type: 'tool_context', tool: name || 'unknown', originalChars: bounded.originalChars, sentChars: bounded.content.length, truncated: bounded.truncated });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: bounded.content });
       }
     }
     throw new Error('本次自主行动达到轮次上限');
   } catch (error) { log({ run, type: 'failed', error: error.message }); throw error; }
   finally { await session.close().catch(() => {}); }
 }
-module.exports = { runAgent, record, recentActions, agentPrompt };
+module.exports = { runAgent, record, recentActions, agentPrompt, boundedToolOutput };
