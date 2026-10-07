@@ -57,7 +57,8 @@ async function runAgent({ body, request, connect = notion.connectNotion, log = r
       log({ run, type: 'model_started', turn, inputChars: JSON.stringify(messages).length });
       let data;
       try {
-        data = await request({ ...body, max_tokens: 2048, messages, tools, tool_choice: exhausted ? 'none' : 'auto' }, deadline);
+        const glm53 = /(?:^|\/)glm-5\.3(?:$|-)/i.test(body.model || '');
+        data = await request({ ...body, max_tokens: 8192, ...(glm53 ? { thinking: { type: 'enabled' }, reasoning_effort: 'low' } : {}), messages, tools, tool_choice: exhausted ? 'none' : 'auto' }, deadline);
       } catch (error) {
         log({ run, type: 'model_failed', turn, elapsedMs: Date.now() - started, error: error.message });
         throw error;
@@ -65,6 +66,7 @@ async function runAgent({ body, request, connect = notion.connectNotion, log = r
       log({ run, type: 'model_result', turn, elapsedMs: Date.now() - started, finishReason: data.choices?.[0]?.finish_reason, usage: data.usage });
       const message = data.choices?.[0]?.message;
       if (!message) throw new Error('模型未返回 assistant message');
+      if (data.choices[0].finish_reason === 'length') throw new Error('模型输出达到 token 上限，不能视为完成或静默');
       if (!message.tool_calls?.length) {
         log({ run, type: 'finished', calls: used });
         return data;
