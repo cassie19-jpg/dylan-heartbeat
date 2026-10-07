@@ -145,3 +145,14 @@ test('长页面工具结果保留完整 JSON，并明确标记节选', () => {
   assert(bounded.content.length < 8000);
   assert.equal(parsed.verification, 'not_applicable');
 });
+
+test('GLM 5.3 后台使用轻量推理，截断明确报错且关闭会话', async () => {
+  const session = mockSession();
+  await assert.rejects(runAgent({ body: { model: 'glm-5.3', messages: [] }, connect: async () => session, log: () => {}, request: async body => {
+    assert.equal(body.reasoning_effort, 'low');
+    assert.equal(body.thinking.type, 'enabled');
+    assert.equal(body.max_tokens, 8192);
+    return { choices: [{ finish_reason: 'length', message: { role: 'assistant', content: '' } }] };
+  } }), /token 上限/);
+  assert(session.closed);
+});
