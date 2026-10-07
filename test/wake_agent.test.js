@@ -134,3 +134,14 @@ test('授权持久化加密，重启可读，回调拒绝错误 state 和重放'
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('长页面工具结果保留完整 JSON，并明确标记节选', () => {
+  const { boundedToolOutput } = require('../wake_agent');
+  const output = { result: { content: [{ type: 'text', text: '长'.repeat(50000) }] }, verification: 'not_applicable' };
+  const bounded = boundedToolOutput(output);
+  const parsed = JSON.parse(bounded.content);
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.result_excerpt.length, 6000);
+  assert(bounded.content.length < 8000);
+  assert.equal(parsed.verification, 'not_applicable');
+});
