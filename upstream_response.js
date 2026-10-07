@@ -8,6 +8,8 @@ function parseSseChatCompletion(text) {
   let streamed = "";
   let completed = "";
   let lastPayload = null;
+  const calls = new Map();
+  let reasoning = '';
   for (const line of String(text || "").split(/\r?\n/)) {
     const match = line.match(/^data:\s*(.*)$/i);
     if (!match) continue;
@@ -18,6 +20,15 @@ function parseSseChatCompletion(text) {
     if (payload?.error) throw new Error(payload.error.message || JSON.stringify(payload.error));
     lastPayload = payload;
     const choice = payload?.choices?.[0] || {};
+    if (typeof choice.delta?.reasoning_content === 'string') reasoning += choice.delta.reasoning_content;
+    for (const part of choice.delta?.tool_calls || []) {
+      const index = part.index ?? 0;
+      const call = calls.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } };
+      if (part.id) call.id = part.id;
+      if (part.function?.name) call.function.name += part.function.name;
+      if (part.function?.arguments) call.function.arguments += part.function.arguments;
+      calls.set(index, call);
+    }
     const delta = contentText(choice.delta?.content);
     const message = contentText(choice.message?.content);
     const legacy = contentText(choice.text);
@@ -28,7 +39,7 @@ function parseSseChatCompletion(text) {
   if (!content && !lastPayload) throw new Error("SSE 响应中没有可读取的 data JSON");
   return {
     ...(lastPayload || {}),
-    choices: [{ ...(lastPayload?.choices?.[0] || {}), message: { ...(lastPayload?.choices?.[0]?.message || {}), content } }]
+    choices: [{ ...(lastPayload?.choices?.[0] || {}), message: { ...(lastPayload?.choices?.[0]?.message || {}), content, ...(reasoning ? { reasoning_content: reasoning } : {}), ...(calls.size ? { tool_calls: [...calls.entries()].sort((a, b) => a[0] - b[0]).map(([, call]) => call) } : {}) } }]
   };
 }
 

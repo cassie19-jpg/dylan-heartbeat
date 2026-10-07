@@ -29,6 +29,8 @@ const {
   selectRequestedModel
 } = require("./model_config");
 const { applyModelParameterCompatibility } = require("./model_parameters");
+const notionMcp = require('./notion_mcp');
+const { recentActions } = require('./wake_agent');
 
 const DEFAULT_BODY_LIMIT_MB = 50;
 
@@ -39,7 +41,7 @@ function readBodyLimitBytes() {
 }
 
 const app = Fastify({
-  logger: true,
+  logger: { serializers: { req: req => ({ method: req.method, url: String(req.url || '').split('?')[0], hostname: req.hostname, remoteAddress: req.ip }) } },
   bodyLimit: readBodyLimitBytes()
 });
 
@@ -901,6 +903,35 @@ function basicAuth(req, reply, done) {
   }
 }
 
+app.get('/admin/notion', { preHandler: basicAuth }, async (req, reply) => {
+  let state;
+  try { state = notionMcp.status(); }
+  catch { state = { error: '授权配置不可用，请核对 MCP_CREDENTIAL_KEY 和服务地址' }; }
+  const escape = text => String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  reply.header('Cache-Control', 'no-store');
+  return reply.type('text/html').send(`<meta charset="utf-8"><h2>Notion 后台行动</h2><p>每个部署独立授权；请只选择人类观察中心和自己的小屋。</p><pre>${escape(JSON.stringify(state, null, 2))}</pre><p>authorized 只表示已保存授权；实际连接结果见下方行动记录。</p><p><a href="/admin/notion/connect">连接 Notion</a> · <a href="/admin">返回管理页</a></p><form method="post" action="/admin/notion/reset"><p>需要重新授权时，先关闭 NOTION_MCP_ENABLED 并重新部署，再清除旧授权。</p><button type="submit">清除旧授权</button></form><h3>近期行动</h3><pre>${escape(recentActions())}</pre>`);
+});
+app.post('/admin/notion/reset', { preHandler: basicAuth }, async (req, reply) => {
+  try {
+    if (notionMcp.enabled()) return reply.code(409).send('请先关闭 NOTION_MCP_ENABLED 并重新部署，避免与后台刷新授权冲突。');
+    if (!req.headers.origin || new URL(req.headers.origin).origin !== new URL(process.env.HEARTBEAT_PUBLIC_URL).origin) return reply.code(403).send('请从本服务管理页操作');
+    const file = runtimeFile('notion-oauth.enc');
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return reply.redirect('/admin/notion');
+  } catch { return reply.code(400).send('无法清除授权，请核对服务地址配置。'); }
+});
+app.get('/admin/notion/connect', { preHandler: basicAuth }, async (req, reply) => {
+  try { return reply.redirect(await notionMcp.beginAuthorization()); }
+  catch { return reply.code(400).send('无法开始授权，请检查启用开关、公开 HTTPS 地址、凭据密钥及网络连接。'); }
+});
+app.get('/admin/notion/callback', async (req, reply) => {
+  reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
+  try {
+    await notionMcp.finishAuthorization(req.query.code, req.query.state);
+    return reply.redirect('/admin/notion');
+  } catch { return reply.code(400).send('授权未完成或回调已过期，请返回 /admin/notion 重新连接。'); }
+});
+
 // ========================
 // 管理页面 GET /admin
 // ========================
@@ -1402,6 +1433,7 @@ const html = `<!DOCTYPE html>
   <div class="container">
     <h2>HEARTBEAT</h2>
     <div class="subtitle">Runtime · AI Residency</div>
+    <p><a href="/admin/notion">Notion 授权与行动记录</a></p>
 
     <div class="status">
       <p>Gateway <strong>运行中 (${serverUptime}秒)</strong></p>

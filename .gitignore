@@ -11,3 +11,5 @@ presets.json
 wake_prompt.txt
 diary/
 data/
+notion-oauth.enc*
+wake-actions.jsonl*

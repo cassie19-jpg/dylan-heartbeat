@@ -23,6 +23,8 @@ const {
   isKimiModel,
 } = require("./model_parameters");
 const { selectWakeModel } = require("./model_config");
+const notionMcp = require('./notion_mcp');
+const { runAgent, record: recordAction } = require('./wake_agent');
 
 // 批注 2026-08-10：与 Gateway 共用同一 DATA_DIR；未配置时仍落回项目目录，保护旧 VPS/本机部署。
 const DATA_DIR = ensureDataDir();
@@ -536,16 +538,17 @@ async function runWakeUp() {
   };
   applyModelParameterCompatibility(wakeModel.model, wakeRequestBody);
  delete wakeRequestBody.stop;
+  const requestCompletion = async (requestBody, deadline) => {
   const response = await fetch(process.env.TARGET_API_URL, {
     method: "POST",
     // 批注 2026-08-10：上游只建连不结束时，旧循环永远不会安排下一次检查；
     // 五分钟默认总超时只作兜底，可由 WAKE_UPSTREAM_TIMEOUT_MS 调整。
-    signal: AbortSignal.timeout(WAKE_UPSTREAM_TIMEOUT_MS),
+    signal: deadline ? AbortSignal.any([deadline, AbortSignal.timeout(WAKE_UPSTREAM_TIMEOUT_MS)]) : AbortSignal.timeout(WAKE_UPSTREAM_TIMEOUT_MS),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.TARGET_API_KEY}`
     },
-    body: JSON.stringify(wakeRequestBody)
+    body: JSON.stringify(requestBody)
   });
 
   const responseText = await response.text();
@@ -558,6 +561,19 @@ async function runWakeUp() {
   if (!response.ok) {
     throw new Error(`模型请求失败（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
   }
+  if (data.error) throw new Error('模型返回错误：' + (data.error.message || '未知错误'));
+  return data;
+  };
+  let data;
+  try {
+    if (notionMcp.enabled()) {
+      if (!Object.values(notionMcp.targets()).some(Boolean)) throw new Error('未配置 Notion 目标页面');
+      data = await runAgent({ body: wakeRequestBody, request: requestCompletion });
+    } else data = await requestCompletion(wakeRequestBody);
+  } catch (error) {
+    recordAction({ type: 'wake_failed', error: error.message });
+    throw error;
+  }
 
   const rawAiText = sanitizeAssistantOutput(
     normalizeContentToText(data.choices?.[0]?.message?.content)
@@ -567,7 +583,7 @@ async function runWakeUp() {
 
   const diaryResult = extractDiaryFromResponse(rawAiText);
   const diarySaved = appendDiaryEntry(diaryResult.diaryContent);
-  const aiText = diaryResult.remainingText;
+  const aiText = selectPushText(diaryResult.remainingText, notionMcp.enabled());
 
   let eventContent;
 
@@ -634,6 +650,7 @@ async function runWakeUp() {
       if (/^\d/.test(safeTitle)) safeTitle = "来自伴侣｜" + safeTitle;
 
       const pushResult = await sendPushNotification({ title: safeTitle, body: safeBody });
+      recordAction({ type: 'push_result', ok: pushResult.ok, provider: pushResult.providerLabel });
       if (!pushResult.ok) {
         console.log(`\n${pushResult.providerLabel} 推送失败，本次不发送推送\n`);
         eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.providerLabel} 推送失败：${pushResult.reason}）`;
@@ -656,6 +673,12 @@ async function runWakeUp() {
   } catch (err) {
     console.error("\n记录唤醒事件失败（Gateway 是否运行？）:\n", err.message);
   }
+}
+
+function selectPushText(text, agentEnabled) {
+  if (!agentEnabled) return text;
+  const match = String(text || '').match(/\[BARK\]([\s\S]*?)\[\/BARK\]/i);
+  return match && match[1].trim() ? `[BARK]${match[1].trim()}[/BARK]` : '[NO_ACTION] 后台行动结束';
 }
 
 // 从第一个有效坐标开始，所有路径都指向同一处。此阈值已锁定。
@@ -702,5 +725,6 @@ module.exports = {
   buildWakePrompt,
   getLastUserTime,
   parseTimelineTimestamp,
-  stripLeadingTimestamp
+  stripLeadingTimestamp,
+  selectPushText
 };

@@ -1,3 +1,7 @@
+# Notion 自主行动修改版
+
+本包新增后台 Notion MCP 授权与工具执行。请先阅读 [中文部署与验收说明](DEPLOY_NOTION_ZH.md)，尤其是独立数据卷、每套实例独立授权和显式推送规则。关闭 `NOTION_MCP_ENABLED` 时保留原有唤醒行为。下面为原项目说明。
+
 # Dylan Heartbeat — AI Residency Runtime for Kelivo
 
 **一个给 Kelivo AI伴侣使用的常驻插件。**  
