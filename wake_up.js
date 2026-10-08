@@ -102,7 +102,15 @@ function appendDiaryEntry(content) {
 }
 
 // 批注 2026-07-11：推送层扩展为 Bark/ntfy；默认仍走 Bark，保护旧部署不改 .env 也能继续运行。
+function isPushQuietTime(date = new Date()) {
+  return getHourInTimeZone(date, "Asia/Shanghai") < 8;
+}
+
 async function sendPushNotification({ title, body }) {
+  // 在实际发送时检查北京时间；后台 Notion 行动和日记不受影响。
+  if (isPushQuietTime()) {
+    return { ok: false, skipped: true, providerLabel: "静默时段", reason: "北京时间 00:00–08:00 禁止推送" };
+  }
   const provider = (process.env.PUSH_PROVIDER || "bark").trim().toLowerCase();
 
   if (provider === "ntfy") {
@@ -487,6 +495,10 @@ function buildWakeMessages(messages, wakePrompt) {
 }
 
 async function runWakeUp() {
+  if (isPushQuietTime()) {
+    console.log("北京时间 00:00–08:00 休息，本次不唤醒模型");
+    return;
+  }
   console.log("\n==========================");
   console.log("开始自动唤醒");
   console.log("==========================\n");
@@ -650,8 +662,11 @@ async function runWakeUp() {
       if (/^\d/.test(safeTitle)) safeTitle = "来自伴侣｜" + safeTitle;
 
       const pushResult = await sendPushNotification({ title: safeTitle, body: safeBody });
-      recordAction({ type: 'push_result', ok: pushResult.ok, provider: pushResult.providerLabel });
-      if (!pushResult.ok) {
+      recordAction({ type: 'push_result', ok: pushResult.ok, provider: pushResult.providerLabel, skipped: Boolean(pushResult.skipped) });
+      if (pushResult.skipped) {
+        console.log(`\n${pushResult.reason}，后台行动已保留\n`);
+        eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.reason}）`;
+      } else if (!pushResult.ok) {
         console.log(`\n${pushResult.providerLabel} 推送失败，本次不发送推送\n`);
         eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.providerLabel} 推送失败：${pushResult.reason}）`;
       } else {
@@ -697,7 +712,15 @@ async function scheduleNextCheck() {
   } catch (err) {
     console.error("唤醒检查出错:", err);
   }
-  setTimeout(scheduleNextCheck, getCheckIntervalMs());
+  // 夜间休息直接等到北京时间08:00，白天保留原有检查间隔。
+  const nextDelay = isPushQuietTime()
+    ? (() => {
+        const now = new Date();
+        const parts = getDatePartsInTimeZone(now, "Asia/Shanghai");
+        return ((8 - Number(parts.hour)) * 3600 - Number(parts.minute) * 60 - Number(parts.second)) * 1000 - now.getMilliseconds();
+      })()
+    : getCheckIntervalMs();
+  setTimeout(scheduleNextCheck, nextDelay);
 }
 
 if (require.main === module) {
@@ -726,5 +749,7 @@ module.exports = {
   getLastUserTime,
   parseTimelineTimestamp,
   stripLeadingTimestamp,
-  selectPushText
+  selectPushText,
+  isPushQuietTime,
+  sendPushNotification
 };
