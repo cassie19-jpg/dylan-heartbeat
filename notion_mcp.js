@@ -154,7 +154,6 @@ function validateCall(name, args, allowed) {
     if (!Array.isArray(args.pages) || args.pages.length !== 1) throw new Error('一次只能创建一篇');
     const page = args.pages[0];
     if (!page || Object.keys(page).some(k => !['properties', 'content'].includes(k)) || typeof page.properties?.title !== 'string' || Object.keys(page.properties).some(k => k !== 'title') || !page.properties.title.trim() || typeof page.content !== 'string' || !page.content.trim() || page.content.length > 20000) throw new Error('创建需要标题和正文（最多 20000 字符）');
-    if (/程程\s*[&＆]\s*小D/i.test(JSON.stringify(args))) throw new Error('禁止访问或引用程程 & 小D');
   } else throw new Error('未开放此工具');
 }
 module.exports = { enabled, targets, pageId, provider, readState, patchState, beginAuthorization, finishAuthorization, status, connectNotion, resultText, assertSuccess, extractCreatedIds, validateCall };
