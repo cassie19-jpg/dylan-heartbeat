@@ -149,7 +149,8 @@ function validateCall(name, args, allowed) {
     args.id = pageId(args.id);
   } else if (name === 'notion-create-pages') {
     if (Object.keys(args).some(k => !['parent', 'pages'].includes(k))) throw new Error('不支持的创建参数');
-    if (!args.parent || typeof args.parent.page_id !== 'string' || Object.keys(args.parent).some(k => k !== 'page_id') || !allowed.has(pageId(args.parent.page_id))) throw new Error('创建位置不在允许范围');
+    if (!args.parent || typeof args.parent !== 'object' || typeof args.parent.page_id !== 'string' || Object.keys(args.parent).some(k => !['page_id', 'type'].includes(k)) || (args.parent.type !== undefined && args.parent.type !== 'page_id')) throw new Error('创建父页面参数必须为 page_id，可选 type 只能是 page_id');
+    if (!allowed.has(pageId(args.parent.page_id))) throw new Error('创建位置不在允许范围');
     args.parent.page_id = pageId(args.parent.page_id);
     if (!Array.isArray(args.pages) || args.pages.length !== 1) throw new Error('一次只能创建一篇');
     const page = args.pages[0];
