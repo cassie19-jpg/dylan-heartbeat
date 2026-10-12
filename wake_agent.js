@@ -67,7 +67,20 @@ async function runAgent({ body, request, connect = notion.connectNotion, log = r
   const roots = new Set(Object.values(notion.targets()).filter(Boolean));
   const allowed = new Set(roots);
   const readPages = new Set();
-  const tools = session.tools.map((t, index) => ({ type: 'function', function: { name: `notion_${index}`, description: t.description || t.name, parameters: t.inputSchema } }));
+  const tools = session.tools.map((t, index) => ({ type: 'function', function: {
+    name: `notion_${index}`,
+    description: t.name === 'notion-create-pages' ? '在已读取的指定根页面下创建一篇带标题和正文的子页面。必须提供 parent 对象和 pages 数组；不支持工作区草稿、数据库、模板或批量创建。' : (t.description || t.name),
+    parameters: t.name === 'notion-create-pages' ? {
+      type: 'object', additionalProperties: false, required: ['parent', 'pages'],
+      properties: {
+        parent: { type: 'object', additionalProperties: false, required: ['page_id'], properties: { page_id: { type: 'string', enum: [...roots] }, type: { type: 'string', enum: ['page_id'] } } },
+        pages: { type: 'array', minItems: 1, maxItems: 1, items: { type: 'object', additionalProperties: false, required: ['properties', 'content'], properties: {
+          properties: { type: 'object', additionalProperties: false, required: ['title'], properties: { title: { type: 'string', minLength: 1 } } },
+          content: { type: 'string', minLength: 1, maxLength: 20000 }
+        } } }
+      }
+    } : t.inputSchema
+  } }));
   const mapping = new Map(session.tools.map((t, i) => [`notion_${i}`, t.name]));
   const messages = [...body.messages, { role: 'system', content: agentPrompt() }, { role: 'user', content: '[后台行动任务] 请自主决定本次要做什么，按工具和推送规则执行。' }];
   let used = 0;
