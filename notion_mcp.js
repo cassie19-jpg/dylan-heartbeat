@@ -149,11 +149,22 @@ function validateCall(name, args, allowed) {
     args.id = pageId(args.id);
   } else if (name === 'notion-create-pages') {
     if (Object.keys(args).some(k => !['parent', 'pages'].includes(k))) throw new Error('不支持的创建参数');
+    // 部分兼容模型会把嵌套对象/数组编码为 JSON 字符串；解析后仍执行相同的范围校验。
+    for (const key of ['parent', 'pages']) {
+      if (typeof args[key] === 'string') {
+        try { args[key] = JSON.parse(args[key]); }
+        catch { throw new Error(`创建参数 ${key} 必须为有效 JSON 对象或数组`); }
+      }
+    }
     if (!args.parent || typeof args.parent !== 'object' || typeof args.parent.page_id !== 'string' || Object.keys(args.parent).some(k => !['page_id', 'type'].includes(k)) || (args.parent.type !== undefined && args.parent.type !== 'page_id')) throw new Error('创建父页面参数必须为 page_id，可选 type 只能是 page_id');
     if (!allowed.has(pageId(args.parent.page_id))) throw new Error('创建位置不在允许范围');
     args.parent.page_id = pageId(args.parent.page_id);
     if (!Array.isArray(args.pages) || args.pages.length !== 1) throw new Error('一次只能创建一篇');
     const page = args.pages[0];
+    if (page && typeof page.properties === 'string') {
+      try { page.properties = JSON.parse(page.properties); }
+      catch { throw new Error('创建参数 properties 必须为有效 JSON 对象'); }
+    }
     if (!page || Object.keys(page).some(k => !['properties', 'content'].includes(k)) || typeof page.properties?.title !== 'string' || Object.keys(page.properties).some(k => k !== 'title') || !page.properties.title.trim() || typeof page.content !== 'string' || !page.content.trim() || page.content.length > 20000) throw new Error('创建需要标题和正文（最多 20000 字符）');
   } else throw new Error('未开放此工具');
 }
