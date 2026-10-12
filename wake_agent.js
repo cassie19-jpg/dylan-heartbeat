@@ -60,6 +60,23 @@ function boundedToolOutput(output) {
   const excerpt = notion.resultText(output.result).slice(0, 6000);
   return { content: JSON.stringify({ result_excerpt: excerpt, childPageIds: output.childPageIds, verification: output.verification, truncated: true, note: '页面仅返回节选；不要假定已经阅读完整页面。' }), originalChars: text.length, truncated: true };
 }
+function verificationText(result) {
+  const parts = [];
+  function read(value) {
+    if (typeof value === 'string') {
+      try { const parsed = JSON.parse(value); if (parsed && typeof parsed === 'object') { read(parsed); return; } } catch {}
+      const content = value.match(/<content>([\s\S]*?)<\/content>/);
+      parts.push(content ? content[1] : value);
+    } else if (Array.isArray(value)) value.forEach(read);
+    else if (value && typeof value === 'object') {
+      if (typeof value.text === 'string') read(value.text);
+      else if (value.content !== undefined) read(value.content);
+      else Object.values(value).forEach(read);
+    }
+  }
+  read(result.structuredContent || result.content || result);
+  return parts.join('\n');
+}
 async function runAgent({ body, request, connect = notion.connectNotion, log = record, maxCalls = 6 }) {
   const deadline = AbortSignal.timeout(360000);
   const run = crypto.randomUUID();
@@ -143,7 +160,7 @@ async function runAgent({ body, request, connect = notion.connectNotion, log = r
                 const readback = notion.assertSuccess(await session.client.callTool({ name: 'notion-fetch', arguments: { id } }, undefined, { timeout: 30000, signal: deadline }));
                 const normalized = text => text.replace(/[^\p{L}\p{N}]/gu, '');
                 const expected = normalized(args.pages[0].content);
-                if (expected && normalized(notion.resultText(readback)).includes(expected)) output.verification = 'verified';
+              if (expected && normalized(verificationText(readback)).includes(expected)) output.verification = 'verified';
               } catch { /* 写入可能成功，读回失败不得再次创建。 */ }
             }
             if (output.verification !== 'verified') uncertain = true;
@@ -163,4 +180,4 @@ async function runAgent({ body, request, connect = notion.connectNotion, log = r
   } catch (error) { log({ run, type: 'failed', error: error.message }); throw error; }
   finally { await session.close().catch(() => {}); }
 }
-module.exports = { runAgent, record, recentActions, agentPrompt, boundedToolOutput, childPages };
+module.exports = { runAgent, record, recentActions, agentPrompt, boundedToolOutput, childPages, verificationText };
